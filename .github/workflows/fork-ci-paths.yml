@@ -1,0 +1,84 @@
+name: Fork CI path validation
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Exact contribution SHA
+        type: string
+        required: true
+      base:
+        description: Exact target dev SHA
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sha: ['${{ inputs.base }}', '${{ inputs.sha }}']
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - name: Verify tested SHA
+        env:
+          EXPECTED_SHA: ${{ matrix.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: ./.github/actions/check-quality
+  cli:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        sha: ['${{ inputs.base }}', '${{ inputs.sha }}']
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - name: Verify tested SHA and initialize public pinned source
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ matrix.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git config core.longpaths true
+          git submodule update --init --depth 1
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Verify source tree
+        shell: bash
+        run: python scripts/nvx.py verify
+      - name: Install pinned Rust for Windows curl-shim test
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $channel = Select-String -LiteralPath "rust-toolchain.toml" -Pattern '^channel = "([^"]+)"' | Select-Object -First 1
+          if ($null -eq $channel) { throw "Missing Rust pin" }
+          rustup toolchain install $channel.Matches[0].Groups[1].Value --profile minimal --no-self-update
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: ./.github/actions/validate-nvx
+  rust:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+      - name: Verify tested SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: ./.github/actions/check-aci-edge-sandboxes
